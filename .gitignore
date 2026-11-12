@@ -1,0 +1,24 @@
+# Secret - KHÔNG commit
+.env
+*.pem
+*.key
+secrets/
+
+# Build
+target/
+out/
+*.log
+
+# IDE
+.idea/workspace.xml
+.idea/shelf/
+*.iws
+.vscode/
+
+# OS
+.DS_Store
+
+# Script chạy local: PID và log
+.run/
+data/
+loadtest/data.json

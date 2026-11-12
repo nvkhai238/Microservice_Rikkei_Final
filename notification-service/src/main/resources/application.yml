@@ -1,0 +1,51 @@
+server:
+  port: 8085
+  shutdown: graceful
+
+spring:
+  application:
+    name: notification-service
+  config:
+    import:
+      - classpath:ecommerce-common.yml
+      - optional:file:.env[.properties]
+      - optional:file:../.env[.properties]
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/notification_db
+    username: notification_user
+    password: ${NOTIFICATION_DB_PASSWORD}
+  # Mailpit (SMTP giả): xem mail tại http://localhost:${MAILPIT_UI_PORT}
+  mail:
+    host: ${MAIL_HOST:localhost}
+    port: ${MAIL_PORT:1025}
+    properties:
+      mail.smtp.connectiontimeout: 3000     # NFR-AVL-003: SMTP chậm không treo consumer
+      mail.smtp.timeout: 5000
+      mail.smtp.writetimeout: 5000
+
+app:
+  crypto:
+    event-payload-key: ${EVENT_PAYLOAD_KEY:}
+  notification:
+    from: "E-Commerce <no-reply@ecommerce.local>"
+    locale: vi
+    template-version: 1
+    frontend-base-url: ${FRONTEND_BASE_URL:http://localhost:5173}
+    channels:
+      email: true
+      sms: false        # FR-NOT-002: SMS/push tùy cấu hình, cần nhà cung cấp
+      push: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    root: INFO
+    com.ecommerce: DEBUG

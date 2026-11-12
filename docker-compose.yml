@@ -1,0 +1,178 @@
+# Hạ tầng chạy local cho dev. Các service Spring Boot chạy trên máy (IntelliJ/mvnw), kết nối tới đây qua localhost.
+# Khởi động:  docker compose up -d        Dừng:  docker compose down        Xóa sạch data:  docker compose down -v
+# Biến môi trường lấy từ file .env (copy từ .env.example).
+name: ecommerce
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: ecom-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Script init đọc các biến này để tạo 1 database + 1 user riêng cho từng service (CON-02, NFR-SEC-004)
+      IDENTITY_DB_PASSWORD: ${IDENTITY_DB_PASSWORD}
+      CATALOG_DB_PASSWORD: ${CATALOG_DB_PASSWORD}
+      ORDER_DB_PASSWORD: ${ORDER_DB_PASSWORD}
+      PAYMENT_DB_PASSWORD: ${PAYMENT_DB_PASSWORD}
+      NOTIFICATION_DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD}
+      TZ: UTC
+    ports:
+      - "${DB_PORT}:5432"     # cổng ngoài lấy từ .env (5433 để không đụng Postgres của project khác)
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: ecom-redis
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    container_name: ecom-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "${RABBITMQ_PORT}:5672"         # AMQP
+      - "${RABBITMQ_UI_PORT}:15672"     # Web UI: http://localhost:${RABBITMQ_UI_PORT}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mailpit:
+    # SMTP giả để test email: mọi mail gửi tới đây hiện ở http://localhost:${MAILPIT_UI_PORT} (không gửi ra ngoài thật)
+    image: axllent/mailpit:v1.27
+    container_name: ecom-mailpit
+    ports:
+      - "${MAIL_PORT}:1025"           # SMTP
+      - "${MAILPIT_UI_PORT}:8025"     # Web UI
+
+  # ===========================================================================
+  # Các microservice (profile "apps"): chạy TOÀN BỘ hệ thống trong Docker.
+  #   ./mvnw clean package -DskipTests && docker compose --profile apps up -d --build
+  # Mặc định "docker compose up" chỉ bật hạ tầng ở trên (dev chạy service bằng IntelliJ / run-all.sh).
+  # Trong mạng docker, service gọi nhau bằng TÊN (identity-service:8081...), không dùng localhost.
+  # Biến trong "environment" GHI ĐÈ giá trị cùng tên trong .env (vd DB_PORT=5433 của máy host).
+  # ===========================================================================
+  identity-service:
+    profiles: [apps]
+    build: { context: ., args: { MODULE: identity-service } }
+    env_file: .env
+    environment: &app-env
+      DB_HOST: postgres
+      DB_PORT: 5432
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+      IDENTITY_SERVICE_URL: http://identity-service:8081
+      CATALOG_SERVICE_URL: http://catalog-service:8082
+      ORDER_SERVICE_URL: http://order-service:8083
+      PAYMENT_SERVICE_URL: http://payment-service:8084
+      PAYMENT_WEBHOOK_URL: http://payment-service:8084/api/v1/webhooks/payments/mock
+      JWT_PRIVATE_KEY_PATH: /app/secrets/jwt-private.pem
+      JWT_PUBLIC_KEY_PATH: /app/secrets/jwt-public.pem
+      GATEWAY_KEYSTORE_PATH: /app/secrets/gateway-keystore.p12
+      MEDIA_STORAGE_DIR: /app/data/media
+      SERVER_PORT: 8081
+    # Khóa riêng JWT chỉ chủ file đọc được (chmod 600) => container chạy bằng UID của bạn trên máy host.
+    # ":z" = gắn nhãn SELinux cho bind mount (Fedora/RHEL bật SELinux mặc định).
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    volumes:
+      - ./secrets:/app/secrets:ro,z
+    depends_on: &app-deps
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    healthcheck: &app-health
+      test: ["CMD-SHELL", "wget -qO- http://localhost:$$SERVER_PORT/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+
+  catalog-service:
+    profiles: [apps]
+    build: { context: ., args: { MODULE: catalog-service } }
+    env_file: .env
+    environment:
+      <<: *app-env
+      SERVER_PORT: 8082
+    volumes:
+      - media-data:/app/data/media
+    depends_on: *app-deps
+    healthcheck: *app-health
+
+  order-service:
+    profiles: [apps]
+    build: { context: ., args: { MODULE: order-service } }
+    env_file: .env
+    environment:
+      <<: *app-env
+      SERVER_PORT: 8083
+    depends_on: *app-deps
+    healthcheck: *app-health
+
+  payment-service:
+    profiles: [apps]
+    build: { context: ., args: { MODULE: payment-service } }
+    env_file: .env
+    environment:
+      <<: *app-env
+      SERVER_PORT: 8084
+    depends_on: *app-deps
+    healthcheck: *app-health
+
+  notification-service:
+    profiles: [apps]
+    build: { context: ., args: { MODULE: notification-service } }
+    env_file: .env
+    environment:
+      <<: *app-env
+      SERVER_PORT: 8085
+    depends_on: *app-deps
+    healthcheck: *app-health
+
+  api-gateway:
+    profiles: [apps]
+    build: { context: ., args: { MODULE: api-gateway } }
+    env_file: .env
+    environment:
+      <<: *app-env
+      SERVER_PORT: 8080
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"   # CHỈ gateway mở cổng ra ngoài (FR-GW-001)
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    volumes:
+      - ./secrets:/app/secrets:ro,z
+    depends_on:
+      redis: { condition: service_healthy }
+      identity-service: { condition: service_healthy }
+    healthcheck: *app-health
+
+volumes:
+  media-data:
+  postgres-data:
+  redis-data:
+  rabbitmq-data:

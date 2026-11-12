@@ -1,0 +1,172 @@
+server:
+  port: ${GATEWAY_PORT:8080}
+  # FR-GW-006: giới hạn kích thước header
+  max-http-request-header-size: 16KB
+  netty:
+    connection-timeout: 5s
+    idle-timeout: 60s
+  # CON-03 / NFR-SEC-001: HTTPS. Dev mặc định tắt; bật bằng GATEWAY_SSL_ENABLED=true (chứng chỉ do scripts/gen-secrets.sh tạo)
+  ssl:
+    enabled: ${GATEWAY_SSL_ENABLED:false}
+    key-store: file:${GATEWAY_KEYSTORE_PATH:secrets/gateway-keystore.p12}
+    key-store-type: PKCS12
+    key-store-password: ${GATEWAY_KEYSTORE_PASSWORD:}
+    key-alias: gateway
+    enabled-protocols: TLSv1.3,TLSv1.2     # COM-01
+
+spring:
+  application:
+    name: api-gateway
+  config:
+    import:
+      - optional:file:.env[.properties]
+      - optional:file:../.env[.properties]
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD}
+      timeout: 500ms
+  codec:
+    max-in-memory-size: 2MB
+
+  cloud:
+    gateway:
+      server:
+        webflux:
+          # FR-GW-006: thời gian kết nối/phản hồi tới upstream
+          httpclient:
+            connect-timeout: 2000      # ms
+            response-timeout: 15s
+          # FR-GW-006: giới hạn kích thước body (trừ route upload ảnh bên dưới)
+          default-filters:
+            - name: RequestSize
+              args:
+                maxSize: 1MB
+            # Không để lộ header nội bộ của service ra ngoài
+            - RemoveResponseHeader=X-Powered-By
+            # Service phía sau cũng trả X-Correlation-Id => giữ một bản (cùng giá trị)
+            - DedupeResponseHeader=X-Correlation-Id, RETAIN_FIRST
+
+          # FR-GW-002: định tuyến theo version/path. Client CHỈ gọi qua gateway.
+          # Route cụ thể đặt TRƯỚC route chung (route khớp đầu tiên thắng).
+          routes:
+            - id: catalog-image-upload
+              uri: ${CATALOG_SERVICE_URL:http://localhost:8082}
+              predicates:
+                - Path=/api/v1/admin/catalog/products/*/images
+                - Method=POST
+              filters:
+                - name: RequestSize
+                  args:
+                    maxSize: 6MB
+
+            - id: identity-service
+              uri: ${IDENTITY_SERVICE_URL:http://localhost:8081}
+              predicates:
+                - Path=/api/v1/auth/**, /api/v1/users/**, /api/v1/admin/iam/**
+
+            - id: catalog-service
+              uri: ${CATALOG_SERVICE_URL:http://localhost:8082}
+              predicates:
+                - Path=/api/v1/categories/**, /api/v1/brands/**, /api/v1/products/**, /api/v1/media/**, /api/v1/admin/catalog/**
+
+            - id: order-service
+              uri: ${ORDER_SERVICE_URL:http://localhost:8083}
+              predicates:
+                - Path=/api/v1/cart/**, /api/v1/orders/**, /api/v1/admin/orders/**, /api/v1/admin/inventory/**
+
+            - id: payment-service
+              uri: ${PAYMENT_SERVICE_URL:http://localhost:8084}
+              predicates:
+                - Path=/api/v1/payments/**, /api/v1/webhooks/payments/**, /api/v1/admin/payments/**
+
+            # Tài liệu OpenAPI của từng service: /docs/<service>/v3/api-docs -> <service>/v3/api-docs
+            - id: docs-identity
+              uri: ${IDENTITY_SERVICE_URL:http://localhost:8081}
+              predicates: [Path=/docs/identity/**]
+              filters: [StripPrefix=2]
+            - id: docs-catalog
+              uri: ${CATALOG_SERVICE_URL:http://localhost:8082}
+              predicates: [Path=/docs/catalog/**]
+              filters: [StripPrefix=2]
+            - id: docs-order
+              uri: ${ORDER_SERVICE_URL:http://localhost:8083}
+              predicates: [Path=/docs/order/**]
+              filters: [StripPrefix=2]
+            - id: docs-payment
+              uri: ${PAYMENT_SERVICE_URL:http://localhost:8084}
+              predicates: [Path=/docs/payment/**]
+              filters: [StripPrefix=2]
+
+            # notification-service KHÔNG có route công khai: nó chỉ nghe event từ RabbitMQ.
+            # /internal/** của các service cũng KHÔNG được route => client không gọi được API nội bộ.
+
+app:
+  security:
+    jwk-set-uri: ${IDENTITY_SERVICE_URL:http://localhost:8081}/.well-known/jwks.json
+    issuer: ecommerce-identity
+  # FR-GW-008: allowlist, KHÔNG dùng "*" khi cho phép credential
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
+  # FR-GW-005, NFR-SEC-007: rate limit theo IP hoặc user. Policy khớp ĐẦU TIÊN được áp dụng.
+  # limit = số request tối đa trong một cửa sổ "window".
+  rate-limit:
+    enabled: ${RATE_LIMIT_ENABLED:true}
+    policies:
+      - name: auth-sensitive          # chống brute force đăng nhập / reset mật khẩu (FR-IAM-009)
+        paths: [/api/v1/auth/login, /api/v1/auth/register, /api/v1/auth/refresh, /api/v1/auth/forgot-password, /api/v1/auth/reset-password, /api/v1/auth/resend-verification, /api/v1/auth/verify-email]
+        key: IP
+        limit: ${RATE_LIMIT_AUTH:10}
+        window: 1m
+      - name: webhook
+        paths: [/api/v1/webhooks/**]
+        key: IP
+        limit: 300
+        window: 1m
+      - name: checkout                # tạo đơn / hủy đơn: theo user
+        paths: [/api/v1/orders, /api/v1/orders/*/cancel]
+        methods: [POST]
+        key: USER
+        limit: ${RATE_LIMIT_CHECKOUT:30}
+        window: 1m
+      - name: default
+        paths: [/api/**]
+        key: USER_OR_IP
+        limit: ${RATE_LIMIT_DEFAULT:600}
+        window: 1m
+
+# Swagger UI gộp: http://localhost:8080/swagger-ui.html (chọn service ở góc trên bên phải)
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    urls:
+      - name: identity
+        url: /docs/identity/v3/api-docs
+      - name: catalog
+        url: /docs/catalog/v3/api-docs
+      - name: order
+        url: /docs/order/v3/api-docs
+      - name: payment
+        url: /docs/payment/v3/api-docs
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway
+  endpoint:
+    health:
+      show-details: always
+    gateway:
+      access: read-only            # xem route: GET http://localhost:8080/actuator/gateway/routes
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name:},%X{correlationId:-}]"
+  level:
+    root: INFO
+    com.ecommerce: INFO
+    # Access log riêng một logger để dễ tách ra file/ELK
+    access-log: INFO

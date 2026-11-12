@@ -1,0 +1,47 @@
+server:
+  port: 8084
+  shutdown: graceful
+
+spring:
+  application:
+    name: payment-service
+  config:
+    import:
+      - classpath:ecommerce-common.yml
+      - optional:file:.env[.properties]
+      - optional:file:../.env[.properties]
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/payment_db
+    username: payment_user
+    password: ${PAYMENT_DB_PASSWORD}
+
+app:
+  payment:
+    # URL công khai của hệ thống (gateway) để dựng link thanh toán trả cho khách
+    public-base-url: ${PUBLIC_BASE_URL:http://localhost:8080}
+    webhook:
+      secret: ${PAYMENT_WEBHOOK_SECRET}        # FR-PAY-007: khóa HMAC, KHÔNG ghi cứng
+      replay-window: 5m                        # FR-PAY-008: webhook cũ hơn 5 phút bị từ chối
+    refund-recovery-interval: 60s
+    reconciliation-cron: "0 0 2 * * *"         # FR-PAY-018: 2h sáng mỗi ngày
+    reconciliation-lookback: 7d
+    mock:
+      # Provider giả gửi webhook về đây (gọi thẳng payment-service, như provider thật gọi vào URL đã đăng ký)
+      webhook-url: ${PAYMENT_WEBHOOK_URL:http://localhost:8084/api/v1/webhooks/payments/mock}
+      webhook-delay: 1s
+      duplicate-webhook: ${MOCK_DUPLICATE_WEBHOOK:true}   # gửi trùng 1 lần để chứng minh idempotency (FR-PAY-009)
+      fail-refunds: ${MOCK_FAIL_REFUNDS:false}            # bật để thử luồng hoàn tiền thất bại (FR-SAGA-004)
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    root: INFO
+    com.ecommerce: DEBUG

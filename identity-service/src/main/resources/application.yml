@@ -1,0 +1,57 @@
+server:
+  port: 8081
+  shutdown: graceful
+
+spring:
+  application:
+    name: identity-service
+  config:
+    # ecommerce-common.yml (trong common.jar): RabbitMQ, Jackson, Flyway, JPA, log pattern dùng chung.
+    # .env: secret (CON-09). Chạy từ thư mục gốc hay thư mục module đều đọc được.
+    import:
+      - classpath:ecommerce-common.yml
+      - optional:file:.env[.properties]
+      - optional:file:../.env[.properties]
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/identity_db
+    username: identity_user
+    password: ${IDENTITY_DB_PASSWORD}
+
+app:
+  jwt:
+    # Cặp khóa RSA: identity giữ private key để KÝ; service khác chỉ cần public key (qua JWKS) để VERIFY.
+    # Chưa có file thì service tự sinh (chỉ tiện cho dev). Tạo trước: scripts/gen-secrets.sh
+    private-key-path: ${JWT_PRIVATE_KEY_PATH:secrets/jwt-private.pem}
+    public-key-path: ${JWT_PUBLIC_KEY_PATH:secrets/jwt-public.pem}
+    access-token-ttl: 15m          # FR-IAM-010: ngắn hạn
+    refresh-token-ttl: 7d
+  auth:
+    bcrypt-strength: 12            # NFR-SEC-002
+    max-failed-logins: 5           # FR-IAM-009: sai 5 lần thì khóa tạm
+    lock-duration: 15m
+    email-verification-required: ${EMAIL_VERIFICATION_REQUIRED:false}   # FR-IAM-004 "nếu chính sách bật"
+    email-verification-ttl: 24h
+    password-reset-ttl: 30m
+    password:
+      min-length: 8
+      max-length: 72               # bcrypt chỉ dùng 72 byte đầu
+  crypto:
+    event-payload-key: ${EVENT_PAYLOAD_KEY:}
+  bootstrap:
+    # Tạo tài khoản ADMIN đầu tiên khi khởi động (nếu chưa có). Không ghi cứng trong code (CON-09).
+    admin-email: ${ADMIN_EMAIL:}
+    admin-password: ${ADMIN_PASSWORD:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always         # chỉ để dev; production phải tắt
+
+logging:
+  level:
+    root: INFO
+    com.ecommerce: DEBUG

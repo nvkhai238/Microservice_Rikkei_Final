@@ -1,0 +1,49 @@
+server:
+  port: 8083
+  shutdown: graceful
+
+spring:
+  application:
+    name: order-service
+  config:
+    import:
+      - classpath:ecommerce-common.yml
+      - optional:file:.env[.properties]
+      - optional:file:../.env[.properties]
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/order_db
+    username: order_user
+    password: ${ORDER_DB_PASSWORD}
+    hikari:
+      maximum-pool-size: ${ORDER_DB_POOL_SIZE:30}   # flash sale: nhiều request giữ kho cùng lúc
+
+app:
+  inventory:
+    reservation-ttl: ${RESERVATION_TTL:15m}   # A-08 / TBD-03: thời gian giữ kho, cấu hình được
+    default-warehouse: MAIN                   # FR-INV-001 / TBD-10: 1 kho mặc định
+    expiry-job-interval: 30s                  # FR-INV-011
+    expiry-batch-size: 50
+  cart:
+    max-lines: 50
+    max-quantity-per-line: 99                 # FR-CART-004 (ngoài giới hạn riêng từng SKU)
+  order:
+    currency: VND
+  clients:
+    catalog-base-url: ${CATALOG_SERVICE_URL:http://localhost:8082}
+    identity-base-url: ${IDENTITY_SERVICE_URL:http://localhost:8081}
+    connect-timeout: 1s                       # COM-06: client PHẢI đặt timeout
+    read-timeout: 3s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    root: INFO
+    com.ecommerce: DEBUG

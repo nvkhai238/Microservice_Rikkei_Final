@@ -1,0 +1,9 @@
+# Build context chỉ cần các jar trong */target
+**/src
+**/.idea
+.git
+.run
+data
+secrets
+*.md
+*.pdf

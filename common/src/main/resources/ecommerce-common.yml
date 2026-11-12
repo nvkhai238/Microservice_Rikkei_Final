@@ -1,0 +1,55 @@
+# =====================================================================
+# Cấu hình DÙNG CHUNG cho mọi service servlet (nằm trong common.jar).
+# Service nạp file này bằng: spring.config.import: classpath:ecommerce-common.yml
+# Chỉ đặt ở đây những key mà service KHÔNG tự khai báo lại.
+# =====================================================================
+spring:
+  jackson:
+    deserialization:
+      # DR-012: request có field lạ => 400 (chống mass assignment). Event payload tự bỏ qua field lạ
+      # nhờ @JsonIgnoreProperties(ignoreUnknown = true) (NFR-COMP-002).
+      fail-on-unknown-properties: true
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER}
+    password: ${RABBITMQ_PASSWORD}
+    # Outbox relay chờ broker xác nhận đã nhận message rồi mới đánh dấu PUBLISHED
+    publisher-confirm-type: simple
+    listener:
+      simple:
+        acknowledge-mode: auto
+        # Lỗi quá số lần retry thì KHÔNG requeue vô hạn => message sang DLQ (COM-09)
+        default-requeue-rejected: false
+        prefetch: 20
+        retry:
+          enabled: true
+          max-attempts: 4            # 1 lần đầu + 3 lần thử lại
+          initial-interval: 1s
+          multiplier: 3              # 1s, 3s, 9s (exponential backoff - FR-NOT-006)
+          max-interval: 30s
+  flyway:
+    # db/platform (trong common.jar): outbox, processed_event, audit_log. db/migration: bảng riêng của service
+    locations: classpath:db/platform,classpath:db/migration
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+app:
+  security:
+    # Mọi service verify JWT bằng public key lấy từ JWKS của identity-service (FR-GW-004)
+    jwk-set-uri: ${IDENTITY_SERVICE_URL:http://localhost:8081}/.well-known/jwks.json
+    issuer: ecommerce-identity
+  outbox:
+    poll-interval: 500ms
+    batch-size: 100
+
+logging:
+  pattern:
+    # Mọi dòng log có [tên-service,correlationId] để grep xuyên service (COM-05, FR-GW-007)
+    level: "%5p [${spring.application.name:},%X{correlationId:-}]"
