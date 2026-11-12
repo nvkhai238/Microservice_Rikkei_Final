@@ -22,3 +22,4 @@ out/
 .run/
 data/
 loadtest/data.json
+docs/
